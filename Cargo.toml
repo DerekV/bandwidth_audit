@@ -1,0 +1,8 @@
+[package]
+name = "bandwidth_audit"
+version = "0.1.0"
+authors = ["Derek VerLee <dverlee@resolutebi.com>"]
+
+[dependencies]
+packet = "0.1"
+pcap = { version = "0.7", features = ["tokio"] }
