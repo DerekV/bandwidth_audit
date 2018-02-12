@@ -25,7 +25,13 @@ fn main() {
         // we need to review the Capture global headers for the link type
         let ip_pkt = Packet::new(packet.data).unwrap();
 
-        let link = (ip_pkt.source(),ip_pkt.destination());
+        let src = ip_pkt.source();
+        let dst = ip_pkt.destination();
+        let link = if src <= dst {
+            (src,dst)
+        } else {
+            (dst,src)
+        };
         let total = linkmap.entry(link).or_insert(0);
         *total += packet.header.len;
 
