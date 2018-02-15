@@ -1,8 +1,9 @@
+#[macro_use]
 
+extern crate clap;
 extern crate pcap;
 extern crate packet;
 
-use std::env;
 use std::collections::HashMap;
 use std::path::Path;
 use pcap::{Capture,Device,Activated,Linktype};
@@ -11,54 +12,73 @@ use packet::ip::v4::Packet as IpPacket;
 use packet::ether::Packet as EtherPacket;
 use packet::ether::Protocol;
 
+use clap::{App, Arg, ArgGroup};
 
 
 fn main() {
-    let default_max = 100000000;
-    
-    let args:Vec<String> = env::args().collect();
-    let src = &args[1].to_owned();
-    
-    let max = match &args[2].parse::<i32>() {
-        &Ok(n) => n,
-        &Err(_) => default_max,
-    };
+    let matches = App::new("Bandwidth Auditor")
+        .version("0.0000000")
+        .author("Derek VerLee - https://github.com/derekv")
+        .about("Tracks where your bandwidth is going")
+        .arg(Arg::with_name("interface")
+             .short("i")
+             .long("interface")
+             .value_name("INTERFACE")
+             .help("Listen on interface")
+             .takes_value(true))
+        .arg(Arg::with_name("read-file")
+             .short("r")
+             .long("read-file")
+             .value_name("READ_FILE")
+             .help("Read packets form a pcap file")
+             .takes_value(true))
+        .group(ArgGroup::with_name("source")
+               .required(true)
+               .args(&["interface", "read-file"]))
+        .arg(Arg::with_name("count")
+             .short("c")
+             .long("count")
+             .value_name("COUNT")
+             .help("Exit after processing this number of packets")
+             .takes_value(true))
+        .get_matches();
+
+
+    let max :u32 = if matches.is_present("count") {
+        value_t!(matches, "count", u32).unwrap_or_else(|e| { e.exit(); })
+    } else {0};
+
+
     println!("Quitting after {} packets",max);
     println!("{:?}",Device::list());
 
     let mut cap:Capture<Activated> = 
-        if src.starts_with("en") || src.starts_with("tun") || src.starts_with("if") {
+        if let Some(ifname) = matches.value_of("interface") {
             let devices = Device::list().unwrap();
             let mut device = Device::lookup().unwrap();
-            match devices.iter().find(|&d| d.name==src[..]) {
+            match devices.iter().find(|&d| d.name==ifname[..]) {
                 Some(x) => {
                     device.name = x.name.clone();
                     device.desc = x.desc.clone();
                 },
                 _ => {
-                    println!("Could not find device named {}", src);
+                    println!("Could not find device named {}", ifname);
                     return;
                 },
             };
              
-            //device=src.into();
-
-
-            println!("{:?}",device);
+            println!("Capturing from {:?}",device);
             let r = Capture::from_device(device).unwrap().promisc(true).open();
 
-
-            //let r = device.promisc(true).open();
             match r {
                 Ok(d) => Capture::from(d),
                 Err(e) => { println!("{}",e); return },      
             }
-
-    } else {
-        let input_file_path = Path::new(src);
-        Capture::from(Capture::from_file(input_file_path).unwrap())
-    };
-
+        } else {
+            let path = Path::new(matches.value_of("read-file").unwrap());
+            Capture::from(Capture::from_file(path).unwrap())
+        };
+    
     let linktype = cap.get_datalink();
     println!("{:?} {:?} {:?}",linktype, linktype.get_name().unwrap(), linktype.get_description().unwrap());
     
@@ -66,7 +86,7 @@ fn main() {
 
     let mut count=0;
     while let Ok(packet) = cap.next() {
-        if count >= max {break;}
+        if max!=0 && count >= max {break;}
         
         // TODO this assumes IPV4 packets in pcap
         // will often not be the case

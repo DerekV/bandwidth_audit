@@ -4,5 +4,6 @@ version = "0.1.0"
 authors = ["Derek VerLee <dverlee@resolutebi.com>"]
 
 [dependencies]
+clap = "2.30.0"
 packet = "0.1"
 pcap = { version = "0.7", features = ["tokio"] }
