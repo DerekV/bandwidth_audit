@@ -7,6 +7,7 @@ extern crate packet;
 use std::collections::HashMap;
 use std::path::Path;
 use pcap::{Capture,Device,Activated,Linktype};
+use pcap::Packet as CapturedPacket;
 use packet::Packet;
 use packet::ip::v4::Packet as IpPacket;
 use packet::ether::Packet as EtherPacket;
@@ -41,6 +42,12 @@ fn main() {
              .value_name("COUNT")
              .help("Exit after processing this number of packets")
              .takes_value(true))
+        .arg(Arg::with_name("timeout")
+             .short("t")
+             .long("timeout")
+             .value_name("TIMEOUT")
+             .help("Timout after not receiving packet for ms")
+             .takes_value(true))
         .get_matches();
 
 
@@ -50,10 +57,16 @@ fn main() {
 
 
     println!("Quitting after {} packets",max);
-    println!("{:?}",Device::list());
 
+    //println!("{:?}",Device::list());
+
+    
     let mut cap:Capture<Activated> = 
         if let Some(ifname) = matches.value_of("interface") {
+            if !matches.is_present("count") {
+                eprintln!("Currently, count (-c --count) is required when listening on interface (-i --interface)");
+                ::std::process::exit(1);
+            }
             let devices = Device::list().unwrap();
             let mut device = Device::lookup().unwrap();
             match devices.iter().find(|&d| d.name==ifname[..]) {
@@ -67,9 +80,15 @@ fn main() {
                 },
             };
              
-            println!("Capturing from {:?}",device);
-            let r = Capture::from_device(device).unwrap().promisc(true).open();
-
+            println!("Capturing from {:?}", device);
+            
+            let r = {
+                let mut dev_capt = Capture::from_device(device).unwrap();
+                if matches.is_present("timeout") {
+                    dev_capt = dev_capt.timeout(value_t!(matches, "timeout", i32).unwrap_or_else(|e| {e.exit();}));
+                }
+                dev_capt.promisc(true).open()
+            };
             match r {
                 Ok(d) => Capture::from(d),
                 Err(e) => { println!("{}",e); return },      
@@ -81,45 +100,62 @@ fn main() {
     
     let linktype = cap.get_datalink();
     println!("{:?} {:?} {:?}",linktype, linktype.get_name().unwrap(), linktype.get_description().unwrap());
-    
+
+    let extract_packet_info = 
+    {
+        fn extract_ip_packet(raw : &CapturedPacket) -> Result<(std::net::Ipv4Addr,std::net::Ipv4Addr,u32),String> {
+            let ip = IpPacket::new(raw.data).unwrap();
+            Ok((ip.source(),ip.destination(),raw.header.len))
+        }
+        
+        fn extract_eth_packet(raw : &CapturedPacket) -> Result<(std::net::Ipv4Addr,std::net::Ipv4Addr,u32),String> {
+            let eth_pkt = EtherPacket::new(raw.data).unwrap();                 
+            if eth_pkt.protocol() == Protocol::Ipv4 {
+                let ip = IpPacket::new(eth_pkt.payload()).unwrap();
+                Ok((ip.source(),ip.destination(),raw.header.len))
+            } else {
+                Err(format!("Unsupported Protocol {:?}", eth_pkt.protocol()))
+            }
+        }
+        
+        match linktype {
+            Linktype(12) => extract_ip_packet,
+            _ => extract_eth_packet
+        }
+    };
+
+
     let mut linkmap = HashMap::new();
-
     let mut count=0;
-    while let Ok(packet) = cap.next() {
-        if max!=0 && count >= max {break;}
+
+                  
+    loop {
+        if max>0 && count >= max {println!("Hit max {}, {}", max,count); break;}
+        let next = cap.next();
         
-        // TODO this assumes IPV4 packets in pcap
-        // will often not be the case
-        // we need to review the Capture global headers for the link type
+        if next.is_err() {
+            println!("Stopping: {}", next.unwrap_err());
+            break;
+        }
 
-
-
-        let mut eth_pkt; // need a place to hold the binding for eth packet
+        let packet = next.unwrap();
         
-        let ip_pkt = match linktype {
-            Linktype(12)=> IpPacket::new(packet.data).unwrap(),
-            _ => {
-                eth_pkt = EtherPacket::new(packet.data).unwrap();
-                if eth_pkt.protocol() != Protocol::Ipv4 { continue; } // TODO 
-                IpPacket::new(eth_pkt.payload()).unwrap()
+        match extract_packet_info(&packet) {
+            Ok((src,dst,size)) => {
+                let link = if src <= dst {
+                    (src,dst)
+                } else {
+                    (dst,src)
+                };
+                
+                let total = linkmap.entry(link).or_insert(0);
+                *total += size;
+                
+                //println!("{} src:{} dst:{}",size,src,dst);
+                count+=1;
             },
-        };
-
-        
-
-        let src = ip_pkt.source();
-        let dst = ip_pkt.destination();
-        let link = if src <= dst {
-            (src,dst)
-        } else {
-            (dst,src)
-        };
-        
-        let total = linkmap.entry(link).or_insert(0);
-        *total += packet.header.len;
-
-        //println!("{:?} src:{:?} dst:{:?}",ip_pkt.protocol(),ip_pkt.source(), ip_pkt.destination());
-        count+=1;
+            Err(msg) => println!("Skipping packet: {}", msg),
+        }
     }
 
     let mut totals_vec: Vec<(&(std::net::Ipv4Addr,std::net::Ipv4Addr),&u32)> = linkmap.iter().collect();
